@@ -335,15 +335,15 @@
 				<!-- 数据库地址 
 					（Database address)
 				-->
-				<host> localhost </host>										<!-- Type: String -->
-				<port> 0 </port>												<!-- Type: Integer -->
+				<host> 192.168.137.11 </host>										<!-- Type: String -->
+				<port> 3306 </port>												<!-- Type: Integer -->
 
 				<!-- 数据库账号验证 
 					（Database auth)
 				-->
 				<auth>  
 					<username> kbe </username>									<!-- Type: String -->
-					<password> pwd123456 </password>							<!-- Type: String -->
+					<password> A7671952ADE546501D627BB6A193BF2FEEC123ED336DC4FDDE7A51551A23346B8850805C31F4AAE527D8771B9ACC75328EF9B7355314A80061C3C86CA3D7FFD085E2928FB136174BABC19F95184DE3F00F318D8D8C520C051540D7951BE46B700CB67D9564BD8EAAC3850075740AD0EF966D238F029C301F0DA3C6EC3FEDA151 </password>							<!-- Type: String -->
 					
 					<!-- 为true则表示password是加密(rsa)的, 可防止明文配置 
 						(is true, password is RSA)

@@ -1,0 +1,11 @@
+{
+  "files.encoding": "gb2312", 
+    "clangd.arguments": [
+    "-j=12",
+    "--all-scopes-completion",
+    "--completion-style=detailed",
+    "--header-insertion=iwyu",
+    "--clang-tidy",
+    "--compile-commands-dir=${workspaceFolder}"
+  ]
+}
