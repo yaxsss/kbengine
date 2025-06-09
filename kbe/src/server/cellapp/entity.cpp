@@ -2307,71 +2307,104 @@ PyObject* Entity::pyGetVolatileinfo()
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * @brief 检查实体移动是否超过最大速度限制
+ * 
+ * 该方法用于验证实体的移动是否在允许的速度范围内，是反作弊系统的核心组件。
+ * 通过检查Y轴速度和XZ平面速度来防止客户端发送非法的移动数据。
+ * 
+ * @param position 目标位置坐标
+ * @return bool 如果移动合法返回true，否则返回false
+ */
 bool Entity::checkMoveForTopSpeed(const Position3D& position)
 {
+	// 计算从当前位置到目标位置的移动向量
 	Position3D movment = position - this->position();
-	bool move = true;
+	bool move = true;  // 默认允许移动
 	
-	// 检查移动
+	// 检查Y轴(垂直)方向的移动速度限制
+	// topSpeedY_为单位时间内允许的最大垂直移动距离
 	if(topSpeedY_ > 0.01f && movment.y > topSpeedY_)
 	{
-		move = false;
+		move = false;  // Y轴移动速度超限，拒绝移动
 	}
 
+	// 如果Y轴检查通过，继续检查XZ平面(水平)的移动速度限制
 	if(move && topSpeed_ > 0.01f)
 	{
+		// 将Y轴置零，只计算水平移动距离
 		movment.y = 0.f;
 		
+		// 检查水平移动距离是否超过最大允许速度
 		if(movment.length() > topSpeed_)
-			move = false;
+			move = false;  // 水平移动速度超限，拒绝移动
 	}
 
-	return move;
+	return move;  // 返回移动是否合法的结果
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * @brief 处理从客户端接收的实体数据更新
+ * 
+ * 客户端会定期向服务端发送实体的位置、方向等状态数据，服务端接收后需要进行
+ * 验证和处理，确保数据的合法性和一致性
+ * 
+ * @param s 包含客户端数据的内存流，包含位置、方向、是否在地面等信息
+ */
 void Entity::onUpdateDataFromClient(KBEngine::MemoryStream& s)
 {
+	// 检查实体是否在有效的空间中，spaceID为0表示不在任何空间
 	if(spaceID_ == 0)
 	{
 		s.done();
 		return;
 	}
 
-	Position3D pos;
-	Direction3D dir;
-	uint8 isOnGround = 0;
-	float yaw, pitch, roll;
-	SPACE_ID currSpace;
+	// 定义临时变量用于接收客户端数据
+	Position3D pos;        // 位置坐标
+	Direction3D dir;       // 方向向量
+	uint8 isOnGround = 0;  // 是否在地面标记
+	float yaw, pitch, roll; // 三个旋转轴的角度值
+	SPACE_ID currSpace;    // 客户端认为的当前空间ID
 
+	// 从消息流中按顺序读取客户端发送的数据
 	s >> pos.x >> pos.y >> pos.z >> roll >> pitch >> yaw >> isOnGround >> currSpace;
 	isOnGround_ = isOnGround > 0;
 
+	// 验证空间ID一致性，客户端的spaceID必须与服务端一致
 	if(spaceID_ != currSpace)
 	{
 		s.done();
 		return;
 	}
 
+	// 设置实体的方向信息
 	dir.yaw(yaw);
 	dir.pitch(pitch);
 	dir.roll(roll);
 	this->direction(dir);
 
+	// 检查移动是否超过最大速度限制
 	if(checkMoveForTopSpeed(pos))
 	{
+		// 速度检查通过，更新实体位置
 		this->position(pos);
 	}
 	else
 	{
+		// 移动速度超出限制，需要进行反作弊处理
+		// 如果既没有观察者也没有被控制，则直接返回
 		if (this->pWitness() == NULL && this->controlledBy_ == NULL)
 			return;
 
+		// 计算移动距离用于调试输出
 		Position3D currpos = this->position();
 		Position3D movment = pos - currpos;
 		float ydist = fabs(movment.y);
 		movment.y = 0.f;
 
+		// 输出调试信息，记录非法移动尝试
 		DEBUG_MSG(fmt::format("{}::onUpdateDataFromClient: {} position[({},{},{}) -> ({},{},{}), (xzDist={})>(topSpeed={}) || (yDist={})>(topSpeedY={})] invalid. reset client!\n", 
 			this->scriptName(), this->id(),
 			this->position().x, this->position().y, this->position().z,
@@ -2386,6 +2419,7 @@ void Entity::onUpdateDataFromClient(KBEngine::MemoryStream& s)
 		Witness* pW = NULL;
 		KBEngine::ENTITY_ID targetID = 0;
 
+		// 如果被其他实体控制，则向控制者的客户端发送重置消息
 		if (controlledBy_ != NULL)
 		{
 			targetID = controlledBy_->id();
@@ -2396,6 +2430,7 @@ void Entity::onUpdateDataFromClient(KBEngine::MemoryStream& s)
 		}
 		else
 		{
+			// 否则向自己的客户端发送重置消息
 			targetID = id();
 			
 			if(isReal())
@@ -2405,17 +2440,20 @@ void Entity::onUpdateDataFromClient(KBEngine::MemoryStream& s)
 		// 在跨进程teleport时，极端情况（ghost）在某种状态下witness此时可能为None
 		if(pW)
 		{
-			// 通知重置
+			// 创建网络消息包，通知客户端重置实体位置和方向
 			Network::Bundle* pSendBundle = Network::Bundle::createPoolObject(OBJECTPOOL_POINT);
 			NETWORK_ENTITY_MESSAGE_FORWARD_CLIENT_BEGIN(targetID, (*pSendBundle));
 			
 			ENTITY_MESSAGE_FORWARD_CLIENT_BEGIN(pSendBundle, ClientInterface::onSetEntityPosAndDir, setEntityPosAndDir);
 
+			// 打包当前正确的位置和方向信息
 			(*pSendBundle) << id();
 			(*pSendBundle) << currpos.x << currpos.y << currpos.z;
 			(*pSendBundle) << direction().roll() << direction().pitch() << direction().yaw();
 
 			ENTITY_MESSAGE_FORWARD_CLIENT_END(pSendBundle, ClientInterface::onSetEntityPosAndDir, setEntityPosAndDir);
+			
+			// 发送重置消息到客户端
 			pW->sendToClient(ClientInterface::onSetEntityPosAndDir, pSendBundle);
 		}
 	}

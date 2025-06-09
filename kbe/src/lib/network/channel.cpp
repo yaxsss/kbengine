@@ -1,5 +1,17 @@
 // Copyright 2008-2018 Yolo Technologies, Inc. All Rights Reserved. https://www.comblockengine.com
 
+/**
+ * 网络通道类实现文件
+ * 
+ * Channel类是KBEngine网络通信的核心组件，负责管理单个网络连接的所有操作。
+ * 主要功能包括：
+ * - 支持多种协议：TCP、UDP、KCP（可靠UDP）、WebSocket
+ * - 数据包的发送和接收管理
+ * - 连接状态管理和超时检测  
+ * - SSL/TLS加密通信支持
+ * - 流量控制和窗口溢出检测
+ * - 对象池内存管理
+ */
 
 #include "channel.h"
 #ifndef CODE_INLINE
@@ -30,6 +42,7 @@ namespace Network
 {
 
 //-------------------------------------------------------------------------------------
+// 全局Channel对象池，用于高效的内存管理
 static ObjectPool<Channel> _g_objPool("Channel");
 ObjectPool<Channel>& Channel::ObjPool()
 {
@@ -37,18 +50,30 @@ ObjectPool<Channel>& Channel::ObjPool()
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * 从对象池创建Channel对象
+ * @param logPoint 日志记录点，用于调试追踪
+ * @return 新创建的Channel对象指针
+ */
 Channel* Channel::createPoolObject(const std::string& logPoint)
 {
 	return _g_objPool.createObject(logPoint);
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * 将Channel对象回收到对象池
+ * @param obj 要回收的Channel对象
+ */
 void Channel::reclaimPoolObject(Channel* obj)
 {
 	_g_objPool.reclaimObject(obj);
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * 销毁Channel对象池
+ */
 void Channel::destroyObjPool()
 {
 	DEBUG_MSG(fmt::format("Channel::destroyObjPool(): size {}.\n", 
@@ -90,6 +115,16 @@ void Channel::onEabledPoolObject()
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * Channel构造函数 - 完整参数版本
+ * @param networkInterface 网络接口引用
+ * @param pEndPoint 端点对象指针
+ * @param traits 通道特性（内部/外部）
+ * @param pt 协议类型（TCP/UDP）
+ * @param spt 协议子类型（默认/KCP/WebSocket等）
+ * @param pFilter 数据包过滤器
+ * @param id 通道ID
+ */
 Channel::Channel(NetworkInterface & networkInterface,
 		const EndPoint * pEndPoint, Traits traits, ProtocolType pt, ProtocolSubType spt,
 		PacketFilterPtr pFilter, ChannelID id):
@@ -130,6 +165,9 @@ Channel::Channel(NetworkInterface & networkInterface,
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * Channel默认构造函数 - 用于对象池
+ */
 Channel::Channel():
 	pNetworkInterface_(NULL),
 	traits_(EXTERNAL),
@@ -168,6 +206,9 @@ Channel::Channel():
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * Channel析构函数
+ */
 Channel::~Channel()
 {
 	// DEBUG_MSG(fmt::format("Channel::~Channel(): {}\n", this->c_str()));
@@ -175,6 +216,18 @@ Channel::~Channel()
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * 初始化通道
+ * 根据协议类型创建相应的数据包接收器和发送器
+ * @param networkInterface 网络接口引用
+ * @param pEndPoint 端点对象
+ * @param traits 通道特性
+ * @param pt 协议类型
+ * @param spt 协议子类型  
+ * @param pFilter 数据包过滤器
+ * @param id 通道ID
+ * @return 初始化是否成功
+ */
 bool Channel::initialize(NetworkInterface & networkInterface, 
 		const EndPoint * pEndPoint, 
 		Traits traits, 
@@ -194,8 +247,10 @@ bool Channel::initialize(NetworkInterface & networkInterface,
 	KBE_ASSERT(pNetworkInterface_ != NULL);
 	KBE_ASSERT(pEndPoint_ != NULL);
 
+	// 根据协议类型初始化接收器和发送器
 	if(protocoltype_ == PROTOCOL_TCP)
 	{
+		// 创建TCP数据包接收器
 		if(pPacketReceiver_)
 		{
 			if(pPacketReceiver_->type() == PacketReceiver::UDP_PACKET_RECEIVER)
@@ -211,23 +266,25 @@ bool Channel::initialize(NetworkInterface & networkInterface,
 
 		KBE_ASSERT(pPacketReceiver_->type() == PacketReceiver::TCP_PACKET_RECEIVER);
 
-		// UDP不需要注册描述符
+		// TCP需要注册读取文件描述符到事件分发器
 		pNetworkInterface_->dispatcher().registerReadFileDescriptor(*pEndPoint_, pPacketReceiver_);
 
-		// 需要发送数据时再注册
+		// TCP发送器按需创建，不在此处注册写入描述符
 		// pPacketSender_ = new TCPPacketSender(*pEndPoint_, *pNetworkInterface_);
 		// pNetworkInterface_->dispatcher().registerWriteFileDescriptor(*pEndPoint_, pPacketSender_);
 
+		// 如果之前是KCP发送器，需要回收
 		if (pPacketSender_ && pPacketSender_->type() != PacketSender::TCP_PACKET_SENDER)
 		{
 			KCPPacketSender::reclaimPoolObject((KCPPacketSender*)pPacketSender_);
 			pPacketSender_ = NULL;
 		}
 	}
-	else
+	else  // UDP协议分支
 	{
 		if (protocolSubtype_ == SUB_PROTOCOL_KCP)
 		{
+			// 创建KCP数据包接收器（可靠UDP）
 			if (pPacketReceiver_)
 			{
 				if (pPacketReceiver_->type() == PacketReceiver::TCP_PACKET_RECEIVER)
@@ -241,6 +298,7 @@ bool Channel::initialize(NetworkInterface & networkInterface,
 				pPacketReceiver_ = new KCPPacketReceiver(*pEndPoint_, *pNetworkInterface_);
 			}
 
+			// 初始化KCP协议栈
 			if (!init_kcp())
 			{
 				KBE_ASSERT(false);
@@ -249,6 +307,7 @@ bool Channel::initialize(NetworkInterface & networkInterface,
 		}
 		else
 		{
+			// 创建标准UDP数据包接收器
 			if (pPacketReceiver_)
 			{
 				if (pPacketReceiver_->type() == PacketReceiver::TCP_PACKET_RECEIVER)
@@ -740,14 +799,21 @@ void Channel::sendto(bool reliable, Bundle* pBundle)
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * 发送数据包束（TCP协议）
+ * 将Bundle添加到发送队列，如果当前没有在发送则立即开始发送
+ * @param pBundle 要发送的数据包束，可以为NULL（表示只是触发发送队列中的数据）
+ */
 void Channel::send(Bundle* pBundle)
 {
+	// UDP协议直接调用sendto方法
 	if (protocoltype_ == PROTOCOL_UDP)
 	{
 		sendto(true, pBundle);
 		return;
 	}
 
+	// 检查通道状态
 	if (isDestroyed())
 	{
 		ERROR_MSG(fmt::format("Channel::send({}): channel has destroyed.\n",
@@ -761,6 +827,7 @@ void Channel::send(Bundle* pBundle)
 		return;
 	}
 
+	// 检查通道是否被标记为无效
 	if (condemn() > 0)
 	{
 		//WARNING_MSG(fmt::format("Channel::send: error, reason={}, from {}.\n", reasonToString(REASON_CHANNEL_CONDEMN), 
@@ -774,6 +841,7 @@ void Channel::send(Bundle* pBundle)
 		return;
 	}
 
+	// 将Bundle添加到发送队列
 	if (pBundle)
 	{
 		pBundle->pChannel(this);
@@ -785,8 +853,10 @@ void Channel::send(Bundle* pBundle)
 	if (bundleSize == 0)
 		return;
 
+	// 如果当前没有在发送，开始发送流程
 	if (!sending())
 	{
+		// 创建或获取TCP数据包发送器
 		if (pPacketSender_ == NULL)
 		{
 			pPacketSender_ = TCPPacketSender::createPoolObject(OBJECTPOOL_POINT);
@@ -795,6 +865,7 @@ void Channel::send(Bundle* pBundle)
 		}
 		else
 		{
+			// 如果之前是其他类型的发送器，需要重新创建TCP发送器
 			if (pPacketSender_->type() != PacketSender::TCP_PACKET_SENDER)
 			{
 				KCPPacketSender::reclaimPoolObject((KCPPacketSender*)pPacketSender_);
@@ -804,6 +875,7 @@ void Channel::send(Bundle* pBundle)
 			}
 		}
 
+		// 尝试立即发送数据
 		pPacketSender_->processSend(this, 0);
 
 		// 如果不能立即发送到系统缓冲区，那么交给poller处理
@@ -1035,20 +1107,29 @@ void Channel::condemn(const std::string& reason, bool waitSendCompletedDestroy)
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * 处理连接握手
+ * 根据协议类型和数据内容判断握手类型：
+ * - TCP: 支持SSL/TLS、WebSocket握手
+ * - UDP: 支持KCP握手
+ * @param pPacket 握手数据包
+ * @return true表示需要继续等待握手，false表示握手完成或失败
+ */
 bool Channel::handshake(Packet* pPacket)
 {
+	// 如果已经完成握手，直接返回
 	if(hasHandshake())
 		return false;
 
 	if (protocoltype_ == PROTOCOL_TCP)
 	{
-		// https/wss
+		// 处理HTTPS/WSS的SSL握手
 		if (!pEndPoint_->isSSL())
 		{
 			int sslVersion = KB_SSL::isSSLProtocal(pPacket);
 			if (sslVersion != -1)
 			{
-				// 无论成功和失败都返回true，让外部回收数据包并继续等待握手
+				// 设置SSL加密，无论成功和失败都返回true，让外部回收数据包并继续等待握手
 				pEndPoint_->setupSSL(sslVersion, pPacket);
 
 				if (pPacket->length() == 0)
@@ -1057,25 +1138,28 @@ bool Channel::handshake(Packet* pPacket)
 		}
 		else
 		{
-			// 如果开启了ssl通讯，因目前只支持wss，所以必须等待websocket握手成功才算通过
+			// 如果开启了SSL通讯，因目前只支持WSS，所以必须等待WebSocket握手成功才算通过
 			if (!websocket::WebSocketProtocol::isWebSocketProtocol(pPacket))
 				return true;
 		}
 
+		// 标记基础握手完成
 		flags_ |= FLAG_HANDSHAKE;
 
-		// 此处判定是否为websocket或者其他协议的握手
+		// 判定是否为WebSocket协议的握手
 		if (websocket::WebSocketProtocol::isWebSocketProtocol(pPacket))
 		{
 			channelType_ = CHANNEL_WEB;
 			if (websocket::WebSocketProtocol::handshake(this, pPacket))
 			{
+				// 创建WebSocket专用的数据包读取器
 				if (!pPacketReader_ || pPacketReader_->type() != PacketReader::PACKET_READER_TYPE_WEBSOCKET)
 				{
 					SAFE_RELEASE(pPacketReader_);
 					pPacketReader_ = new WebSocketPacketReader(this);
 				}
 
+				// 设置WebSocket数据包过滤器
 				pFilter_ = new WebSocketPacketFilter(this);
 				DEBUG_MSG(fmt::format("Channel::handshake: websocket({}) successfully!\n", this->c_str()));
 
@@ -1142,13 +1226,24 @@ void Channel::updateTick(KBEngine::Network::MessageHandlers* pMsgHandlers)
 }
 
 //-------------------------------------------------------------------------------------
+/**
+ * 处理接收到的数据包
+ * 这是网络数据处理的核心方法，负责：
+ * 1. 检查通道状态
+ * 2. 处理握手流程  
+ * 3. 解析和分发消息
+ * @param pMsgHandlers 消息处理器集合
+ * @param pPacket 接收到的数据包
+ */
 void Channel::processPackets(KBEngine::Network::MessageHandlers* pMsgHandlers, Packet* pPacket)
 {
+	// 使用通道专用的消息处理器（如果有的话）
 	if(pMsgHandlers_ != NULL)
 	{
 		pMsgHandlers = pMsgHandlers_;
 	}
 
+	// 检查通道是否已被销毁
 	if (this->isDestroyed())
 	{
 		ERROR_MSG(fmt::format("Channel::processPackets({}): channel[{:p}] is destroyed.\n", 
@@ -1157,6 +1252,7 @@ void Channel::processPackets(KBEngine::Network::MessageHandlers* pMsgHandlers, P
 		return;
 	}
 
+	// 检查通道是否被标记为无效
 	if(this->condemn() > 0)
 	{
 		ERROR_MSG(fmt::format("Channel::processPackets({}): channel[{:p}] is condemn.\n", 
@@ -1166,6 +1262,7 @@ void Channel::processPackets(KBEngine::Network::MessageHandlers* pMsgHandlers, P
 		return;
 	}
 	
+	// 如果还没有完成握手，先处理握手流程
 	if(!hasHandshake())
 	{
 		if (handshake(pPacket))
